@@ -37,6 +37,7 @@ dependencies = [
     "xarray",
     "healpy",
     "h3ronpy",
+	"dggrid4py"
 ]
 
 [project.urls]
