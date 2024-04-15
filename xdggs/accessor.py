@@ -81,3 +81,11 @@ class DGGSAccessor:
             latitude=(self.index._dim, lat_data),
             longitude=(self.index._dim, lon_data),
         )
+
+    def geometry(self):
+        """ Return a new Dataset with geometry type Polygon.
+        """
+        if (self.index.__class__.__name__ == 'ISEAIndex'):
+            geometryDF = self.index._dggrid_instance.grid_cell_polygons_from_cellids(self.index._pd_index.index, self.index._dggs_type,
+                                                                                     self.index._resolution)
+            return xr.combine_by_coords([self._obj, xr.Dataset.from_dataframe(geometryDF)])

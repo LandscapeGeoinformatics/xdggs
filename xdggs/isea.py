@@ -63,7 +63,7 @@ class ISEAIndex(DGGSIndex):
         cellids = dggs.cells_for_geo_points(df, True, grid.upper(), resolution)
         cellids = cellids['seqnums'].values.astype('int64')
         print(f'{grid} unique idx count : {len(np.unique(cellids,axis=-1))}')
-        return cls(cellids, name, resolution, grid, aperture, topology)
+        return cls(cellids, name, resolution, grid.upper(), aperture, topology)
 
     def _latlon2cellid(self, lat: Any, lon: Any) -> np.ndarray:
         lat = np.array(lat)
@@ -96,6 +96,9 @@ class ISEAIndex(DGGSIndex):
 
     def _replace(self, new_pd_index: PandasIndex):
         return type(self)(new_pd_index, self._dim, self._resolution, self._dggs_type, self._aperture, self._topology)
+
+    def to_pandas_index(self):
+        return type(self)(self._pd_index, self._dim, self._resolution, self._dggs_type, self._aperture, self._topology)
 
     def _get_dggrid_instance(self):
         executable = os.environ['DGGRID_PATH']
