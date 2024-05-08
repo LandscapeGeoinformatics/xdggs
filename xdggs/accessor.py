@@ -85,7 +85,12 @@ class DGGSAccessor:
     def geometry(self):
         """ Return a new Dataset with geometry type Polygon.
         """
-        if (self.index.__class__.__name__ == 'ISEAIndex'):
-            geometryDF = self.index._dggrid_instance.grid_cell_polygons_from_cellids(self.index._pd_index.index, self.index._dggs_type,
-                                                                                     self.index._resolution)
-            return xr.combine_by_coords([self._obj, xr.Dataset.from_dataframe(geometryDF)])
+        geometryDF = self.index.geometry()
+        #geometryDF = xr.Dataset.from_dataframe(geometryDF).assign_coords({'cell_ids': ('value', geometryDF['name'])})
+        #geometryDF = geometryDF.drop_vars(['name', 'index'])
+        return geometryDF
+
+    def dggrid_polygon_for_extent(self, extent, src_crs):
+        geometryDF = self.index.dggrid_polygon_for_extent(extent, src_crs)
+        return self._obj.sel({'cell_ids': geometryDF[0].values})
+

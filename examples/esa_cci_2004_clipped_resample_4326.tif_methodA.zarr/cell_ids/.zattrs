@@ -1,0 +1,12 @@
+{
+    "_ARRAY_DIMENSIONS": [
+        "cell_ids"
+    ],
+    "aperture": 7,
+    "epsg": 4326,
+    "grid_name": "isea",
+    "mp": 12,
+    "resolution": -1,
+    "topology": "h",
+    "trunk": 250000
+}

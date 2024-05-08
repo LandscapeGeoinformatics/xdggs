@@ -42,6 +42,10 @@ class DGGSIndex(Index):
 
         return cls.from_variables(variables, options=options)
 
+    @classmethod
+    def stack(cls, variables: Mapping[Any, xr.Variable], dim: Hashable):
+        return cls.from_variables(variables, options={})
+
     def create_variables(
         self, variables: Mapping[Any, xr.Variable] | None = None
     ) -> dict[Hashable, xr.Variable]:
@@ -71,6 +75,7 @@ class DGGSIndex(Index):
     def _cellid2latlon(self, cell_ids: Any) -> tuple[np.ndarray, np.ndarray]:
         """convert cell ids to latitude / longitude (cell centers)."""
         raise NotImplementedError()
+
 
     @property
     def cell_centers(self) -> tuple[np.ndarray, np.ndarray]:
