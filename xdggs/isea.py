@@ -16,7 +16,7 @@ from shapely.geometry import box, shape, Polygon
 from shapely.ops import transform
 from numpy import cos, sin, power, deg2rad, arcsin, sqrt, pi
 import tempfile
-import pymp
+import importlib
 import os
 import time
 
@@ -117,7 +117,7 @@ class ISEAIndex(DGGSIndex):
             print('Dim Error')
             raise ValueError
         dggs = DGGRIDv7(executable=executable, working_dir=working_dir, capture_logs=True, silent=True)
-        cellids = pymp.shared.array((data.shape[0]), dtype='int64')
+        cellids = None
         batch = (data.shape[0]//step)+1
         if (resolution == -1):
             trunk = data[0:step]
@@ -142,14 +142,22 @@ class ISEAIndex(DGGSIndex):
             if (len(filter_) > 0):
                 resolution = filter_.iloc[0, 0]
                 print(f'Auto resolution : {resolution}')
-        with pymp.Parallel(mp) as p:
-            for i in tqdm(p.range(batch)):
-                end = (i*step)+step if (((i*step)+step) < data.shape[0]) else data.shape[0]
-                trunk = data[(i*step):end]
-                df=gpd.GeoDataFrame([0]*trunk.shape[0],geometry=gpd.points_from_xy(trunk[:, lon], trunk[:, lat]), crs=f'EPSG:{src_epsg}')
-                df = df.to_crs(4326) if (src_epsg != 4326) else df
-                result = dggs.cells_for_geo_points(df, True, grid.upper(), resolution)
-                cellids[(i*step):(i*step)+result['seqnums'].values.shape[0]] = result['seqnums'].values.astype('int64')
+        if (importlib.util.find_spec('pymp') is None):
+            df=gpd.GeoDataFrame([0]*data.shape[0],geometry=gpd.points_from_xy(data[:, lon], data[:, lat]), crs=f'EPSG:{src_epsg}')
+            df = df.to_crs(4326) if (src_epsg != 4326) else df
+            result = dggs.cells_for_geo_points(df, True, grid.upper(), resolution)
+            cellids = result['seqnums'].values.astype('int64')
+        else:
+            import pymp
+            cellids = pymp.shared.array((data.shape[0]), dtype='int64')
+            with pymp.Parallel(mp) as p:
+                for i in tqdm(p.range(batch)):
+                    end = (i*step)+step if (((i*step)+step) < data.shape[0]) else data.shape[0]
+                    trunk = data[(i*step):end]
+                    df=gpd.GeoDataFrame([0]*trunk.shape[0],geometry=gpd.points_from_xy(trunk[:, lon], trunk[:, lat]), crs=f'EPSG:{src_epsg}')
+                    df = df.to_crs(4326) if (src_epsg != 4326) else df
+                    result = dggs.cells_for_geo_points(df, True, grid.upper(), resolution)
+                    cellids[(i*step):(i*step)+result['seqnums'].values.shape[0]] = result['seqnums'].values.astype('int64')
         print('Cell ID calcultion completed')
         #print(f'{grid} unique idx count : {len(np.unique(cellids,axis=-1))}')
         return cls(cellids, name, resolution, grid.upper(), aperture, topology)
