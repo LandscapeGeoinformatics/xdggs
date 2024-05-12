@@ -82,15 +82,24 @@ class DGGSAccessor:
             longitude=(self.index._dim, lon_data),
         )
 
-    def geometry(self):
+    def geometry_for_extent(self, extent=None, src_crs=None):
         """ Return a new Dataset with geometry type Polygon.
         """
-        geometryDF = self.index.geometry()
-        #geometryDF = xr.Dataset.from_dataframe(geometryDF).assign_coords({'cell_ids': ('value', geometryDF['name'])})
-        #geometryDF = geometryDF.drop_vars(['name', 'index'])
-        return geometryDF
+        if (extent is None):
+            geometryDF = self.index._geometry()
+            result = self._obj
+        else:
+            result = self.polygon_for_extent(extent, src_crs)
+            geometryDF = self.index._geometry(result.cell_ids.data)
+        geometryDF = geometryDF.sort_values('name')
+        self._obj = result.sortby('cell_ids')
+        self._obj['polygon']=((self._index._dim), geometryDF['geometry'])
+        return self._obj
 
-    def dggrid_polygon_for_extent(self, extent, src_crs):
-        geometryDF = self.index.dggrid_polygon_for_extent(extent, src_crs)
+        #return self._obj.assign_coords(polygon=('polygon',geometryDF)).drop_indexes('polygon')
+
+
+    def polygon_for_extent(self, extent, src_crs):
+        geometryDF = self.index.polygon_for_extent(extent, src_crs)
         return self._obj.sel({'cell_ids': geometryDF[0].values})
 

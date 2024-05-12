@@ -4,7 +4,8 @@ from typing import Any, Union
 import numpy as np
 import xarray as xr
 from xarray.indexes import Index, PandasIndex
-
+from collections.abc import Hashable, Iterable, Iterator, Mapping, Sequence
+from xarray.core.types import ErrorOptions, JoinOptions, Self
 from xdggs.utils import GRID_REGISTRY, _extract_cell_id_variable
 
 
@@ -46,6 +47,10 @@ class DGGSIndex(Index):
     def stack(cls, variables: Mapping[Any, xr.Variable], dim: Hashable):
         return cls.from_variables(variables, options={})
 
+    def concat(self, indexes: Sequence[Self], dim: Hashable, positions: Iterable[Iterable[int]] | None = None, ) -> Self:
+        return self.concat(cls, indexes, dim, positions)
+
+
     def create_variables(
         self, variables: Mapping[Any, xr.Variable] | None = None
     ) -> dict[Hashable, xr.Variable]:
@@ -76,6 +81,8 @@ class DGGSIndex(Index):
         """convert cell ids to latitude / longitude (cell centers)."""
         raise NotImplementedError()
 
+    def _geometry(self, extent=None):
+        raise NotImplementedError()
 
     @property
     def cell_centers(self) -> tuple[np.ndarray, np.ndarray]:
