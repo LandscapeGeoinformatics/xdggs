@@ -1,8 +1,0 @@
-{
-    "AREA_OR_POINT": "Area",
-    "TIFFTAG_SOFTWARE": "GRASS GIS 7.8.6RC2 with GDAL 3.3.2",
-    "_ARRAY_DIMENSIONS": [
-        "band",
-        "cell_ids"
-    ]
-}
