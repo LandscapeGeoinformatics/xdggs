@@ -242,11 +242,9 @@ class ISEAIndex(DGGSIndex):
         return f"ISEAIndex(dgg_type={self._dggs_type}, resolution={self._resolution})"
 
     def sel(self, labels, method=None, tolerance=None):
-        print(f'cells id: {labels} {type(labels)}')
         if method == "nearest":
             raise ValueError("finding nearest grid cell has no meaning")
         target = np.unique(list(labels.values())[0])
-        print(target.shape)
         key = list(labels.keys())[0]
         labels[key] = np.isin(self._pd_index.index.values, target)
         return self._pd_index.sel(labels, method=method, tolerance=tolerance)
