@@ -138,8 +138,8 @@ class ISEAIndex(DGGSIndex):
             df = gpd.GeoDataFrame([0], geometry=[box(minlon, minlat, maxlon, maxlon)],crs=f'EPSG:{src_epsg}')
             print(f'Total Bounds ({src_epsg}): {df.total_bounds}')
             if (src_epsg != 4326):
-                df = df.to_crs('EPSG:4326') if (src_epsg != 4326) else df
-                print(f'Total Bounds (4326): {df.total_bounds}')
+                df = df.to_crs('wgs84')# if (src_epsg != 4326) else df
+                print(f'Total Bounds (wgs84): {df.total_bounds}')
             R=6378
             lon1, lat1, lon2, lat2 = df.total_bounds
             lon1=deg2rad(lon1)
@@ -148,7 +148,7 @@ class ISEAIndex(DGGSIndex):
             lat2=deg2rad(lat2)
             a = ( sin((lon2-lon1) / 2) ** 2 + cos(lon1) * cos(lon2) * sin(0) ** 2 ) #
             d = 2 * arcsin(sqrt(a))
-            normalize = 4*pi if (src_epsg != 4326) else 1
+            normalize = 4*pi if (src_epsg == 3301) else 1
             area = abs(d*( (power(R,2)*sin(lat2)) - (power(R,2)*sin(lat1)) )) / normalize # symmetric of polar coords
             print(f'Total Bounds Area (km^2): {area}')
             avg_area_per_data = (area / data.shape[0])
@@ -160,6 +160,7 @@ class ISEAIndex(DGGSIndex):
                 resolution = filter_.iloc[0, 0]
                 print(f'Auto resolution : {resolution}')
         if (importlib.util.find_spec('pymp') is None):
+            print(f"pymp not found, running on single core")
             df=gpd.GeoDataFrame([0]*data.shape[0],geometry=gpd.points_from_xy(data[:, lon], data[:, lat]), crs=f'EPSG:{src_epsg}')
             df = df.to_crs('EPSG:4326') if (src_epsg != 4326) else df
             result = dggs.cells_for_geo_points(df, True, grid.upper(), resolution)
@@ -172,10 +173,8 @@ class ISEAIndex(DGGSIndex):
                 for i in tqdm(p.range(batch)):
                     end = (i*step)+step if (((i*step)+step) < data.shape[0]) else data.shape[0]
                     trunk = data[(i*step):end]
-                    #print(f'max lat: {np.max(trunk[:,lat])}, min lat: {np.min(trunk[:,lat])}')
-                    #print(f'max lon: {np.max(trunk[:,lon])}, min lon: {np.min(trunk[:,lon])}')
                     df=gpd.GeoDataFrame([0]*trunk.shape[0],geometry=gpd.points_from_xy(trunk[:, lon], trunk[:, lat]), crs=f'EPSG:{src_epsg}')
-                    df = df.to_crs(4326) if (src_epsg != 4326) else df
+                    df = df.to_crs('EPSG:4326') if (src_epsg != 4326) else df
                     result = dggs.cells_for_geo_points(df, True, grid.upper(), resolution)
                     cellids[(i*step):(i*step)+result['seqnums'].values.shape[0]] = result['seqnums'].values.astype('int64')
         print('Cell ID calcultion completed')
