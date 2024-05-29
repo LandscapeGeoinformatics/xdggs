@@ -93,7 +93,7 @@ class DGGSAccessor:
             geometryDF = self.index._geometry(result.cell_ids.data)
         geometryDF = geometryDF.sort_values('name')
         self._obj = result.sortby('cell_ids')
-        self._obj['hex_geometry']=((self._index._dim), geometryDF['geometry'])
+        self._obj['hex_geometry']=((self._index._dim), geometryDF['geometry'].to_wkt())
         return self._obj
 
         #return self._obj.assign_coords(polygon=('polygon',geometryDF)).drop_indexes('polygon')
