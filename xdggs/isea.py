@@ -135,7 +135,8 @@ class ISEAIndex(DGGSIndex):
             minlat = np.min(data[:,lat])
             maxlon = np.max(data[:,lon])
             minlon = np.min(data[:,lon])
-            df = gpd.GeoDataFrame([0], geometry=[box(minlon, minlat, maxlon, maxlon)],crs=f'EPSG:{src_epsg}')
+            print(f'{minlat},{minlon},{maxlat},{maxlon}')
+            df = gpd.GeoDataFrame([0], geometry=[box(minlon, minlat, maxlon, maxlat)],crs=f'EPSG:{src_epsg}')
             print(f'Total Bounds ({src_epsg}): {df.total_bounds}')
             if (src_epsg != 4326):
                 df = df.to_crs('wgs84')# if (src_epsg != 4326) else df
@@ -164,7 +165,8 @@ class ISEAIndex(DGGSIndex):
             df=gpd.GeoDataFrame([0]*data.shape[0],geometry=gpd.points_from_xy(data[:, lon], data[:, lat]), crs=f'EPSG:{src_epsg}')
             df = df.to_crs('EPSG:4326') if (src_epsg != 4326) else df
             result = dggs.cells_for_geo_points(df, True, grid.upper(), resolution)
-            cellids = result['seqnums'].values.astype('int64')
+            cellids = result['seqnums'].values
+            cellids = cellids.astype('int64')
         else:
             import pymp
             cellids = pymp.shared.array((data.shape[0]), dtype='int64')
@@ -177,6 +179,7 @@ class ISEAIndex(DGGSIndex):
                     df = df.to_crs('EPSG:4326') if (src_epsg != 4326) else df
                     result = dggs.cells_for_geo_points(df, True, grid.upper(), resolution)
                     cellids[(i*step):(i*step)+result['seqnums'].values.shape[0]] = result['seqnums'].values.astype('int64')
+            print(f'CellID NAN count: {np.sum(np.isnan(cellids))}')
         print('Cell ID calcultion completed')
         return cls(cellids, name, resolution, grid.upper(), aperture, topology, mp, step, f'EPSG:{src_epsg}')
 
