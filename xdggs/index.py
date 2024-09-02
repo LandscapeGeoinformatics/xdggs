@@ -4,8 +4,13 @@ from typing import Any, Union
 import numpy as np
 import xarray as xr
 from xarray.indexes import Index, PandasIndex
+<<<<<<< HEAD
 from collections.abc import Hashable, Iterable, Iterator, Mapping, Sequence
 from xarray.core.types import ErrorOptions, JoinOptions, Self
+=======
+
+from xdggs.grid import DGGSInfo
+>>>>>>> upstream/main
 from xdggs.utils import GRID_REGISTRY, _extract_cell_id_variable
 
 
@@ -21,13 +26,15 @@ class DGGSIndex(Index):
     _dim: str
     _pd_index: PandasIndex
 
-    def __init__(self, cell_ids: Any | PandasIndex, dim: str):
+    def __init__(self, cell_ids: Any | PandasIndex, dim: str, grid_info: DGGSInfo):
         self._dim = dim
 
         if isinstance(cell_ids, PandasIndex):
             self._pd_index = cell_ids
         else:
             self._pd_index = PandasIndex(cell_ids, dim)
+
+        self._grid = grid_info
 
     @classmethod
     def from_variables(
@@ -39,7 +46,9 @@ class DGGSIndex(Index):
         _, var, _ = _extract_cell_id_variable(variables)
 
         grid_name = var.attrs["grid_name"]
-        cls = GRID_REGISTRY[grid_name]
+        cls = GRID_REGISTRY.get(grid_name)
+        if cls is None:
+            raise ValueError(f"unknown DGGS grid name: {grid_name}")
 
         return cls.from_variables(variables, options=options)
 
@@ -73,17 +82,12 @@ class DGGSIndex(Index):
     def _replace(self, new_pd_index: PandasIndex):
         raise NotImplementedError()
 
-    def _latlon2cellid(self, lat: Any, lon: Any) -> np.ndarray:
-        """convert latitude / longitude points to cell ids."""
-        raise NotImplementedError()
-
-    def _cellid2latlon(self, cell_ids: Any) -> tuple[np.ndarray, np.ndarray]:
-        """convert cell ids to latitude / longitude (cell centers)."""
-        raise NotImplementedError()
+    def cell_centers(self) -> tuple[np.ndarray, np.ndarray]:
+        return self._grid.cell_ids2geographic(self._pd_index.index.values)
 
     def _geometry(self, extent=None):
         raise NotImplementedError()
 
     @property
-    def cell_centers(self) -> tuple[np.ndarray, np.ndarray]:
-        return self._cellid2latlon(self._pd_index.index.values)
+    def grid_info(self) -> DGGSInfo:
+        return self._grid
