@@ -1,14 +1,18 @@
 from collections.abc import Mapping
-from typing import Any
 
 import numpy as np
 import xarray as xr
 from xarray.indexes import PandasIndex
 
 from xdggs.index import DGGSIndex
+from xdggs.grid import DGGSInfo
 from xdggs.utils import _extract_cell_id_variable, register_dggs
-from collections.abc import Hashable, Iterable, Iterator, Mapping, Sequence
-from xarray.core.types import ErrorOptions, JoinOptions, Self
+from typing import Any, ClassVar
+from dataclasses import dataclass
+try:
+    from typing import Self
+except ImportError:  # pragma: no cover
+    from typing_extensions import Self
 
 from tqdm.auto import tqdm
 from dggrid4py import DGGRIDv7
@@ -26,36 +30,63 @@ import pandas as pd
 
 from pyproj import Transformer
 
-isea_type = ['isea4t', 'isea4d', 'isea4h', 'isea3h', 'isea7h', 'isea43h']
 
+@dataclass(frozen=True)
+class ISEAInfo(DGGSInfo):
+    resolution: int
+    aperture: int
+    topology: str
+    src_epsg: str
+    coordinate: list
+    method: str
+    mp: int
+    step: int
+
+    valid_parameters: ClassVar[dict[str, Any]] = {"resolution": range(-1, 15), "aperture": [3, 4, 7],
+                                                  "topology": ['H'], "method": ["centerpoint", "nearestpoint"]}
+
+    def __post_init__(self):
+        if self.resolution not in self.valid_parameters["resolution"]:
+            raise ValueError("resolution must be an integer between 0 and 15")
+        if self.aperture not in self.valid_parameters["aperture"]:
+            raise ValueError("aperture must be an integer 3,4 or 7")
+        if self.topology.upper() not in self.valid_parameters["topology"]:
+            raise ValueError("topology must be H")
+        if self.method.lower() not in self.valid_parameters["method"]:
+            raise ValueError("method {self.method.lower()} is not defined.")
+
+    @classmethod
+    def from_dict(cls: type[Self], mapping: dict[str, Any]) -> Self:
+        params = {k: v for k, v in mapping.items() if k != 'grid_name'}
+        return cls(**params)
+
+    def to_dict(self: Self) -> dict[str, Any]:
+        return {"grid_name": "isea", "resolution": self.resolution, "aperture": self.aperture, "topology": self.topology.upper(),
+                "src_epsg": self.epsg, "coordinate": self.coordinate}
+
+    def cell_ids2geographic(
+        self, cell_ids: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray]:
+        lat, lon = cells_to_coordinates(cell_ids, radians=False)
+
+        return lon, lat
+
+    def geographic2cell_ids(self, lon, lat):
+        return coordinates_to_cells(lat, lon, self.resolution, radians=False)
 
 @register_dggs("isea")
-@register_dggs("ISEA")
 class ISEAIndex(DGGSIndex):
-    _resolution: int
+    _grid: DGGSInfo
 
     def __init__(
         self,
         cell_ids: Any | PandasIndex,
         dim: str,
-        resolution: int,
-        grid: str,
-        aperture: int,
-        topology: str,
-        mp: int,
-        step: int,
-        epsg: str
+        grid_info: DGGSInfo,
     ):
-        super().__init__(cell_ids, dim)
-        self._resolution = int(resolution) if (type(resolution) == int) else resolution
-        self._dggs_type = grid
-        self._aperture = aperture
-        self._topology = topology
-        self._dggrid_instance = self._get_dggrid_instance()
-        self._mp = mp
-        self._step = step
-        self._epsg = epsg
-        #print(f'{selef._dggs_type} unique idx count : {len(.unique(cellids,axis=-1))}')
+        if not isinstance(grid_info, ISEAInfo):
+            raise ValueError(f"grid info object has an invalid type: {type(grid_info)}")
+        super().__init__(cell_ids, dim, grid_info)
 
     @classmethod
     def from_variables(
@@ -64,147 +95,109 @@ class ISEAIndex(DGGSIndex):
         *,
         options: Mapping[str, Any],
     ) -> "ISEAIndex":
-        #name, var, _ = _extract_cell_id_variable(variables)
-
+        # name, var, _ = _extract_cell_id_variable(variables)
         # Data Preprocessing
-        keys = list(variables.keys())
-        # For using set_xindex (already stacked by xarray.stack)
-        if (len(keys) == 1):
-            data = variables[keys[0]].data
-            # if the index data is already in int64 , assume it is already a dggs cell id
-            if (type(data) == np.ndarray and data.dtype == 'int64'):
-                # Assume to be already in dggs ( ndarray and dtype is int64 )
-                attrs = variables[keys[0]].attrs
-                grid = 'isea' + str(attrs['aperture']) + attrs['topology']
-                return cls(data, keys[0], attrs['resolution'], grid.upper(), attrs['aperture'], attrs['topology'], attrs['mp'], attrs['trunk'], attrs['epsg'])
-            else:
-                name, var, _ = _extract_cell_id_variable(variables)
-        # For using xarray.stack
-        elif ( len(keys) == 2):
-            if('lat' not in keys or 'lon' not in keys ):
-                print('Either variable lat or lon is not found')
-                raise ValueError
-            attrs = variables[keys[0]].attrs
+        # If the variable's data is type of PandasIndex, should be already converted.
+        var = variables[[k for k, v in variables.items() if (v.attrs.get('grid_name'))][0]]
+        if (type(var.data) is PandasIndex and var.data.dtype == np.int64):
+            grid_info = ISEAInfo.from_dict(var.arrts)
+            return cls(variables.data, variables.dims[0], grid_info)
+        # For using stack, assume the coordinate is in x, y ordering
+        else:
+            attrs = var.attrs
+            coords = attrs['coordinate']
             start = time.time()
-            lat , lon = xr.broadcast(xr.DataArray(variables['lat'].data, dims='lat'),xr.DataArray(variables['lon'].data, dims='lon'))
-            lon = np.stack([lat,lon],axis=-1)
-            lon = lon.reshape(-1,2)
-            del(lat)
-            del(variables)
+            p0, p1 = variables[coords[0]], variables[coords[1]]
+            p0, p1 = xr.broadcast(xr.DataArray(p0.data, dims=p0.dims), xr.DataArray(p1.data, dims=p1.dims))
+            p1 = np.stack([p0, p1], axis=-1)
+            p1 = p1.reshape(-1, 2)
+            del p0
             end = time.time()
             print(f'Broadcast Array Compeleted : {end-start}')
-            var = xr.Variable(['lat','lon'],lon,attrs=attrs)
+            var = xr.Variable([coords[0], coords[1]], p1, attrs=attrs)
             name = "cell_ids"
-        else:
-            raise ValueError
         # prepare to generate hexagon grid
         resolution = var.attrs.get("resolution", options.get("resolution", 9))
         aperture = var.attrs.get("aperture", options.get("aperture", 7))
         topology = var.attrs.get("topology", options.get("topology", 'h')).lower()
-        src_epsg = var.attrs.get("epsg",options.get("epsg","4326"))
+        src_epsg = var.attrs.get("src_epsg", options.get("src_epsg", "wgs84"))
+        method = var.attrs.get("method", options.get("method", "centerpoint"))
+        mp = var.attrs.get("mp", options.get('mp', 1))
+        step = var.attrs.get("trunk", options.get('trunk', 250000)) if (mp > 1) else var.data.shape[0]
 
-        mp = var.attrs.get("mp",options.get('mp',1))
         grid = 'isea' + str(aperture) + topology
-        dims = list(var.dims)
-        lat, lon = None, None
-        # we assume that the data is Nx2
         data = var.data
-        step = var.attrs.get("trunk",options.get('trunk',250000)) if (mp>1) else data.shape[0]
         executable = os.environ['DGGRID_PATH']
         working_dir = tempfile.mkdtemp()
         dggs = DGGRIDv7(executable=executable, working_dir=working_dir, capture_logs=True, silent=True)
         print(f'Data type : {data.dtype} , shape : {data.shape}')
-        if (grid not in dggs_types):
-            print('ISEA type error')
-            raise ValueError
-        try:
-            lat = dims.index('lat')
-            lon = dims.index('lon')
-        except ValueError:
-            print('lat or lon not found in dim')
-            raise ValueError
-        print(f'Create index from lat,lon with dim index : lat:{lat} lon:{lon}')
-        if (data.shape[-1] != 2):
-            print('Dim Error')
-            raise ValueError
+        if (grid.upper() not in dggs_types):
+            raise ValueError(f"{grid} is not defined in DGGRID")
         cellids = None
-        batch = int(np.ceil(data.shape[0]/step))
-        #batch = batch + 1 if (mp>1) else batch
-        maxlat = np.max(data[:,lat])
-        minlat = np.min(data[:,lat])
-        maxlon = np.max(data[:,lon])
-        minlon = np.min(data[:,lon])
+        batch = int(np.ceil(data.shape[0] / step))
+        maxlat = np.max(data[:, 1])
+        minlat = np.min(data[:, 1])
+        maxlng = np.max(data[:, 0])
+        minlng = np.min(data[:, 0])
         # Auto Resolution
         if (resolution == -1):
-            print(f'Calculate Auto resolution')
-            print(f'{minlat},{minlon},{maxlat},{maxlon}')
-            df = gpd.GeoDataFrame([0], geometry=[box(minlon, minlat, maxlon, maxlat)],crs=f'EPSG:{src_epsg}')
-            print(f'Total Bounds ({src_epsg}): {df.total_bounds}')
-            if (src_epsg != 4326):
-                df = df.to_crs('wgs84')# if (src_epsg != 4326) else df
-                print(f'Total Bounds (wgs84): {df.total_bounds}')
-            R=6371
-            lon1, lat1, lon2, lat2 = df.total_bounds
-            lon1, lon2, lat1, lat2 =deg2rad(lon1), deg2rad(lon2), deg2rad(lat1), deg2rad(lat2)
-            a = ( sin((lon2-lon1) / 2) ** 2 + cos(lon1) * cos(lon2) * sin(0) ** 2 ) #
-            d = 2 * arcsin(sqrt(a))
-            normalize = 4*pi if (src_epsg == 3301) else 1
-            area = abs(d*( (power(R,2)*sin(lat2)) - (power(R,2)*sin(lat1)) )) / normalize # symmetric of polar coords
-            print(f'Total Bounds Area (km^2): {area}')
-            avg_area_per_data = (area / data.shape[0])
-            print(f'Area per center point (km^2): {avg_area_per_data}')
-            dggrid_resolution = dggs.grid_stats_table(grid.upper(), 30)
-            filter_ = dggrid_resolution[dggrid_resolution['Area (km^2)'] < avg_area_per_data]
-            resolution = 9
-            if (len(filter_) > 0):
-                resolution = filter_.iloc[0, 0]
-                print(f'Auto resolution : {resolution}')
+            resolution = cls._autoResolution(minlng, minlat, maxlng, maxlat, src_epsg, data.shape[0], dggs, grid)
         # Generate Cells ID
-        if (importlib.util.find_spec('pymp') is None):
-            print(f"pymp not found, running on single core")
-            # Center Point Method
-            if (method.lower()=='centerpoint'):
-                df=gpd.GeoDataFrame([0]*data.shape[0],geometry=gpd.points_from_xy(data[:, lon], data[:, lat]), crs=f'EPSG:{src_epsg}')
-                df = df.to_crs('EPSG:4326') if (src_epsg != 4326) else df
-                result = dggs.cells_for_geo_points(df, True, grid.upper(), resolution)
-                cellids = result['seqnums'].values
-                cellids = cellids.astype('int64')
-            else:
-                df = gpd.GeoDataFrame([0], geometry=[box(minlon, minlat, maxlon, maxlat)],crs=f'EPSG:{src_epsg}')
-                df = df.to_crs('EPSG:4326') if (src_epsg != 4326) else df
-                result = dggs.grid_cell_polygons_for_extent(grid.upper(), resolution, clip_geom=df.geometry.values[0])
-                result['hex_centroid'] = result.centroid
-                data = S2PointIndex(data)
-                data.query(result['hex_centroid'].values)
-        else:
-            import pymp
-            cellids = pymp.shared.array((data.shape[0]), dtype='int64')
-            print(f"Batch Size: {batch}")
-            with pymp.Parallel(mp) as p:
-                for i in tqdm(p.range(batch)):
-                    end = (i*step)+step if (((i*step)+step) < data.shape[0]) else data.shape[0]
-                    trunk = data[(i*step):end]
-                    df=gpd.GeoDataFrame([0]*trunk.shape[0],geometry=gpd.points_from_xy(trunk[:, lon], trunk[:, lat]), crs=f'EPSG:{src_epsg}')
-                    df = df.to_crs('EPSG:4326') if (src_epsg != 4326) else df
+        if (method.lower() == 'nearestpoint'):
+            df = gpd.GeoDataFrame([0], geometry=[box(minlng, minlat, maxlng, maxlat)], crs=src_epsg)
+            df = df.to_crs('wgs84')
+            result = dggs.grid_centerpoint_for_extent(grid.upper(), resolution, clip_geom=df.geometry.values[0])
+            centroids = np.array([[c.y, c.x] for c in result.geometry.values])
+            centroids_idx = S2PointIndex(centroids)
+            distance, idx = centroids_idx.query(data[:, [1, 0]])
+            cellids = result.iloc[idx]['name']
+        elif (method.lower() == 'centerpoint'):
+            if (importlib.util.find_spec('pymp') is None):
+                print("pymp not found, running on single core")
+                # Center Point Method
+                if (method.lower() == 'centerpoint'):
+                    print('centerpoint : adjust resolution + 1 ({resolution+1})')
+                    resolution = resolution + 1
+                    df = gpd.GeoDataFrame([0] * data.shape[0], geometry=gpd.points_from_xy(data[:, 0], data[:, 1]), crs=src_epsg)
+                    df = df.to_crs('wgs84')
                     result = dggs.cells_for_geo_points(df, True, grid.upper(), resolution)
-                    cellids[(i*step):(i*step)+result['seqnums'].values.shape[0]] = result['seqnums'].values.astype('int64')
+                    cellids = result['seqnums'].values
+                    cellids = cellids.astype('int64')
+            else:
+                import pymp
+                if (method.lower() == 'centerpoint'):
+                    cellids = pymp.shared.array((data.shape[0]), dtype='int64')
+                    print(f"Batch Size: {batch}")
+                    print(f'centerpoint : adjust resolution + 1 ({resolution+1})')
+                    resolution = resolution + 1
+                    with pymp.Parallel(mp) as p:
+                        for i in tqdm(p.range(batch)):
+                            end = (i * step) + step if (((i * step) + step) < data.shape[0]) else data.shape[0]
+                            trunk = data[(i * step):end]
+                            df = gpd.GeoDataFrame([0] * trunk.shape[0], geometry=gpd.points_from_xy(trunk[:, 0], trunk[:, 1]), crs=src_epsg)
+                            df = df.to_crs('wgs84')
+                            result = dggs.cells_for_geo_points(df, True, grid.upper(), resolution)
+                            cellids[(i * step):(i * step) + result['seqnums'].values.shape[0]] = result['seqnums'].values.astype('int64')
         print('Cell ID calcultion completed')
-        return cls(cellids, name, resolution, grid.upper(), aperture, topology, mp, step, f'EPSG:{src_epsg}')
+        arrts = {'resolution': resolution, 'aperture': aperture, 'topology': topology,
+                 'src_epsg': src_epsg, 'coordinate': coords, 'method': method, 'mp': mp, 'step': step}
+        grid_info = ISEAInfo.from_dict(arrts | options)
+        return cls(cellids, name, grid_info)
 
-    def concat(self, indexes: Sequence[Self], dim: Hashable, positions: Iterable[Iterable[int]] | None = None) -> Self:
-        idx = []
+    # def concat(self, indexes: Sequence[Self], dim: Hashable, positions: Iterable[Iterable[int]] | None = None) -> Self:
+    #    idx = []
 
-        attrs = { 'resolution': indexes[0]._resolution ,
-                  'aperture':  indexes[0]._aperture ,
-                  'topology': indexes[0]._topology  ,
-                  'epsg': indexes[0]._epsg,
-                  'mp': indexes[0]._mp,
-                  'trunk': indexes[0]._step
-                }
-        pd_indexes = [idx._pd_index.index for idx in indexes]
-        pd_indexes = pd_indexes[0].append(pd_indexes[1:])
+    #    attrs = { 'resolution': indexes[0]._resolution ,
+    #              'aperture':  indexes[0]._aperture ,
+    #              'topology': indexes[0]._topology  ,
+    #              'epsg': indexes[0]._epsg,
+    #              'mp': indexes[0]._mp,
+    #              'trunk': indexes[0]._step
+    #            }
+    #    pd_indexes = [idx._pd_index.index for idx in indexes]
+    #    pd_indexes = pd_indexes[0].append(pd_indexes[1:])
 
-        return ISEAIndex.from_variables({dim:xr.Variable(dim,pd_indexes.values,attrs)},options={})
+    #    return ISEAIndex.from_variables({dim:xr.Variable(dim,pd_indexes.values,attrs)},options={})
 
     def create_variables(self, variables):
         var = list(variables.values())[0]
@@ -212,18 +205,17 @@ class ISEAIndex(DGGSIndex):
         idx_variables = {self._dim: var}
         return idx_variables
 
-    def _latlon2cellid(self, lat: Any, lon: Any) -> np.ndarray:
+    def _latlng2cellid(self, lat: Any, lng: Any) -> np.ndarray:
         lat = xr.DataArray(lat, dims='lat')
-        lon = xr.DataArray(lon, dims='lon')
-        lat, lon = xr.broadcast(lat, lon)
-        lat = np.stack([lon, lat], axis=-1).reshape(-1, 2)
-        print(lat)
-        del(lon)
-        df = gpd.GeoDataFrame({'lon': lat[:, 0], 'lat': lat[:, 1]}, geometry=gpd.points_from_xy(lat[:, 0], lat[:, 1]))
+        lng = xr.DataArray(lng, dims='lon')
+        lat, lng = xr.broadcast(lat, lng)
+        lat = np.stack([lng, lat], axis=-1).reshape(-1, 2)
+        del lng
+        df = gpd.GeoDataFrame({'lng': lat[:, 0], 'lat': lat[:, 1]}, geometry=gpd.points_from_xy(lat[:, 0], lat[:, 1]))
         cellids = self._dggrid_instance.cells_for_geo_points(df, True, self._dggs_type.upper(), self._resolution)
         return cellids['seqnums'].to_numpy(dtype='int64')
 
-    def _cellid2latlon(self, cell_ids: Any) -> tuple[np.ndarray, np.ndarray]:
+    def _cellid2latlng(self, cell_ids: Any) -> tuple[np.ndarray, np.ndarray]:
         mp = False if (importlib.util.find_spec('pymp') is None) else True
         data = cell_ids
         if (mp):
@@ -301,4 +293,33 @@ class ISEAIndex(DGGSIndex):
         executable = os.environ['DGGRID_PATH']
         working_dir = tempfile.mkdtemp()
         return DGGRIDv7(executable=executable, working_dir=working_dir, capture_logs=True, silent=True)
+
+    @classmethod
+    def _autoResolution(cls: type["ISEAIndex"], minlng, minlat, maxlng, maxlat, src_epsg, num_data, dggs, grid):
+        print('Calculate Auto resolution')
+        print(f'{minlat},{minlng},{maxlat},{maxlng}')
+        df = gpd.GeoDataFrame([0], geometry=[box(minlng, minlat, maxlng, maxlat)], crs=src_epsg)
+        print(f'Total Bounds ({src_epsg}): {df.total_bounds}')
+        df = df.to_crs('wgs84')
+        print(f'Total Bounds (wgs84): {df.total_bounds}')
+        R = 6371
+        lon1, lat1, lon2, lat2 = df.total_bounds
+        lon1, lon2, lat1, lat2 = deg2rad(lon1), deg2rad(lon2), deg2rad(lat1), deg2rad(lat2)
+        a = (sin((lon2 - lon1) / 2) ** 2 + cos(lon1) * cos(lon2) * sin(0) ** 2)
+        d = 2 * arcsin(sqrt(a))
+        normalize = 4 * pi if (src_epsg.lower() == 'epsg:3301') else 1
+        area = abs(d * ((power(R, 2) * sin(lat2)) - (power(R, 2) * sin(lat1)))) / normalize
+        print(f'Total Bounds Area (km^2): {area}')
+        avg_area_per_data = (area / num_data)
+        print(f'Area per center point (km^2): {avg_area_per_data}')
+        dggrid_resolution = dggs.grid_stats_table(grid.upper(), 30)
+        filter_ = dggrid_resolution[dggrid_resolution['Area (km^2)'] < avg_area_per_data]
+        resolution = 5
+        if (len(filter_) > 0):
+            resolution = filter_.iloc[0, 0]
+            print(f'Auto resolution : {resolution}')
+        else:
+            print(f'Auto resolution failed, using {resolution}')
+
+        return resolution
 

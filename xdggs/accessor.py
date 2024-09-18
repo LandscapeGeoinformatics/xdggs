@@ -95,7 +95,6 @@ class DGGSAccessor:
             longitude=(self.index._dim, lon_data),
         )
 
-<<<<<<< HEAD
     def geometry_for_extent(self, extent=None, src_crs=None):
         """ Return a new Dataset with geometry type Polygon.
         """
@@ -117,7 +116,6 @@ class DGGSAccessor:
         geometryDF = self.index.polygon_for_extent(extent, src_crs)
         return self._obj.sel({'cell_ids': geometryDF[0].values})
 
-=======
     def cell_centers(self):
         lon_data, lat_data = self.index.cell_centers()
 
@@ -127,4 +125,3 @@ class DGGSAccessor:
                 "longitude": (self.index._dim, lon_data),
             }
         )
->>>>>>> upstream/main

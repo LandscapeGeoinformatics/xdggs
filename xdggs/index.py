@@ -4,22 +4,35 @@ from typing import Any, Union
 import numpy as np
 import xarray as xr
 from xarray.indexes import Index, PandasIndex
-<<<<<<< HEAD
 from collections.abc import Hashable, Iterable, Iterator, Mapping, Sequence
 from xarray.core.types import ErrorOptions, JoinOptions, Self
-=======
 
 from xdggs.grid import DGGSInfo
->>>>>>> upstream/main
 from xdggs.utils import GRID_REGISTRY, _extract_cell_id_variable
 
 
 def decode(ds):
     variable_name = "cell_ids"
-
-    return ds.drop_indexes(variable_name, errors="ignore").set_xindex(
-        variable_name, DGGSIndex
-    )
+    if (ds[variable_name].attrs.get('grid_name', None) == 'isea'):
+        # ISEA Grid Handling. The cell_ids index is created by stacking x,y coordinate.
+        data = ds[variable_name]
+        if (type(data) is PandasIndex):
+            # Either it is already converted (in PandasIndexI)
+            return ds.drop_indexes(variable_name, errors="ignore").set_xindex(
+                variable_name, DGGSIndex)
+        if (ds[variable_name].attrs.get('coordinate') is None):
+            raise ValueError("ISEA DGGSInfo must consist of coordinate attribute")
+        coords = ds[variable_name].attrs['coordinate']
+        attrs = ds[variable_name].attrs
+        if (len(coords) != 2):
+            raise ValueError("ISEA DGGSInfo must consist of coordinate of size 2 [x, y]")
+        ds[coords[0]].attrs = attrs
+        ds[coords[1]].attrs = attrs
+        ds.stack(variable_name=[coords[0], coords[1]], index_cls=DGGSIndex)
+    else:
+        return ds.drop_indexes(variable_name, errors="ignore").set_xindex(
+            variable_name, DGGSIndex
+        )
 
 
 class DGGSIndex(Index):
@@ -44,7 +57,6 @@ class DGGSIndex(Index):
         options: Mapping[str, Any],
     ) -> "DGGSIndex":
         _, var, _ = _extract_cell_id_variable(variables)
-
         grid_name = var.attrs["grid_name"]
         cls = GRID_REGISTRY.get(grid_name)
         if cls is None:
