@@ -13,22 +13,24 @@ from xdggs.utils import GRID_REGISTRY, _extract_cell_id_variable
 
 def decode(ds):
     variable_name = "cell_ids"
-    if (ds[variable_name].attrs.get('grid_name', None) == 'isea'):
+    isea = [k for k in ds.variables.keys() if (ds[k].attrs.get('grid_name') == 'isea')]
+    if (len(isea) > 0):
         # ISEA Grid Handling. The cell_ids index is created by stacking x,y coordinate.
-        data = ds[variable_name]
+        var_name = isea[0]
+        data = ds[var_name]
         if (type(data) is PandasIndex):
-            # Either it is already converted (in PandasIndexI)
-            return ds.drop_indexes(variable_name, errors="ignore").set_xindex(
-                variable_name, DGGSIndex)
-        if (ds[variable_name].attrs.get('coordinate') is None):
+            # if it is already converted (in PandasIndexI)
+            return ds.drop_indexes(var_name, errors="ignore").set_xindex(variable_name, DGGSIndex)
+        if (ds[var_name].attrs.get('coordinate') is None):
             raise ValueError("ISEA DGGSInfo must consist of coordinate attribute")
-        coords = ds[variable_name].attrs['coordinate']
-        attrs = ds[variable_name].attrs
+        coords = ds[var_name].attrs['coordinate']
+        attrs = ds[var_name].attrs
         if (len(coords) != 2):
-            raise ValueError("ISEA DGGSInfo must consist of coordinate of size 2 [x, y]")
-        ds[coords[0]].attrs = attrs
-        ds[coords[1]].attrs = attrs
-        ds.stack(variable_name=[coords[0], coords[1]], index_cls=DGGSIndex)
+            raise ValueError("ISEA DGGSInfo must consist of coordinate of size 2 in [x, y] order")
+        ds = ds.stack(cell_ids=[coords[0], coords[1]], create_index=False)
+        tuple_ = [t for t in zip(ds[coords[0]].values, ds[coords[1]].values)]
+        ds[variable_name] = xr.Variable([variable_name, 'coord'], tuple_, attrs)
+        return ds.set_xindex(variable_name, DGGSIndex).dggs_ds.drop_dims('coord')
     else:
         return ds.drop_indexes(variable_name, errors="ignore").set_xindex(
             variable_name, DGGSIndex

@@ -7,7 +7,7 @@ from xarray.indexes import PandasIndex
 from xdggs.index import DGGSIndex
 from xdggs.grid import DGGSInfo
 from xdggs.utils import _extract_cell_id_variable, register_dggs
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Sequence, Hashable, Iterable
 from dataclasses import dataclass
 try:
     from typing import Self
@@ -41,6 +41,7 @@ class ISEAInfo(DGGSInfo):
     method: str
     mp: int
     step: int
+    dggs_type: str
 
     valid_parameters: ClassVar[dict[str, Any]] = {"resolution": range(-1, 15), "aperture": [3, 4, 7],
                                                   "topology": ['H'], "method": ["centerpoint", "nearestpoint"]}
@@ -62,17 +63,18 @@ class ISEAInfo(DGGSInfo):
 
     def to_dict(self: Self) -> dict[str, Any]:
         return {"grid_name": "isea", "resolution": self.resolution, "aperture": self.aperture, "topology": self.topology.upper(),
-                "src_epsg": self.epsg, "coordinate": self.coordinate}
+                "src_epsg": self.epsg, "coordinate": self.coordinate, 'dggs_type': self.dggs_type}
 
     def cell_ids2geographic(
         self, cell_ids: np.ndarray
     ) -> tuple[np.ndarray, np.ndarray]:
-        lat, lon = cells_to_coordinates(cell_ids, radians=False)
-
-        return lon, lat
+        # lat, lon = cells_to_coordinates(cell_ids, radians=False)
+        pass
 
     def geographic2cell_ids(self, lon, lat):
-        return coordinates_to_cells(lat, lon, self.resolution, radians=False)
+        pass
+        # return coordinates_to_cells(lat, lon, self.resolution, radians=False)
+
 
 @register_dggs("isea")
 class ISEAIndex(DGGSIndex):
@@ -95,29 +97,18 @@ class ISEAIndex(DGGSIndex):
         *,
         options: Mapping[str, Any],
     ) -> "ISEAIndex":
-        # name, var, _ = _extract_cell_id_variable(variables)
+        name, var, _ = _extract_cell_id_variable(variables)
         # Data Preprocessing
         # If the variable's data is type of PandasIndex, should be already converted.
-        var = variables[[k for k, v in variables.items() if (v.attrs.get('grid_name'))][0]]
         if (type(var.data) is PandasIndex and var.data.dtype == np.int64):
             grid_info = ISEAInfo.from_dict(var.arrts)
             return cls(variables.data, variables.dims[0], grid_info)
-        # For using stack, assume the coordinate is in x, y ordering
-        else:
-            attrs = var.attrs
-            coords = attrs['coordinate']
-            start = time.time()
-            p0, p1 = variables[coords[0]], variables[coords[1]]
-            p0, p1 = xr.broadcast(xr.DataArray(p0.data, dims=p0.dims), xr.DataArray(p1.data, dims=p1.dims))
-            p1 = np.stack([p0, p1], axis=-1)
-            p1 = p1.reshape(-1, 2)
-            del p0
-            end = time.time()
-            print(f'Broadcast Array Compeleted : {end-start}')
-            var = xr.Variable([coords[0], coords[1]], p1, attrs=attrs)
-            name = "cell_ids"
+        if (type(var.data[0]) is not tuple and (len(var.data[0]) != 2)):
+            raise Exception("ISEA set_xindex must consist of array of tuples in (x,y) order")
+        # For using set_xindex, assume the coordinate is in x, y ordering
         # prepare to generate hexagon grid
         resolution = var.attrs.get("resolution", options.get("resolution", 9))
+        coords = var.attrs.get('coordinate', options.get('coordinate'))
         aperture = var.attrs.get("aperture", options.get("aperture", 7))
         topology = var.attrs.get("topology", options.get("topology", 'h')).lower()
         src_epsg = var.attrs.get("src_epsg", options.get("src_epsg", "wgs84"))
@@ -126,7 +117,7 @@ class ISEAIndex(DGGSIndex):
         step = var.attrs.get("trunk", options.get('trunk', 250000)) if (mp > 1) else var.data.shape[0]
 
         grid = 'isea' + str(aperture) + topology
-        data = var.data
+        data = np.array(var.data)
         executable = os.environ['DGGRID_PATH']
         working_dir = tempfile.mkdtemp()
         dggs = DGGRIDv7(executable=executable, working_dir=working_dir, capture_logs=True, silent=True)
@@ -150,7 +141,7 @@ class ISEAIndex(DGGSIndex):
             centroids = np.array([[c.y, c.x] for c in result.geometry.values])
             centroids_idx = S2PointIndex(centroids)
             distance, idx = centroids_idx.query(data[:, [1, 0]])
-            cellids = result.iloc[idx]['name']
+            cellids = result.iloc[idx]['name'].astype('int64')
         elif (method.lower() == 'centerpoint'):
             if (importlib.util.find_spec('pymp') is None):
                 print("pymp not found, running on single core")
@@ -180,24 +171,25 @@ class ISEAIndex(DGGSIndex):
                             cellids[(i * step):(i * step) + result['seqnums'].values.shape[0]] = result['seqnums'].values.astype('int64')
         print('Cell ID calcultion completed')
         arrts = {'resolution': resolution, 'aperture': aperture, 'topology': topology,
-                 'src_epsg': src_epsg, 'coordinate': coords, 'method': method, 'mp': mp, 'step': step}
+                 'src_epsg': src_epsg, 'coordinate': coords, 'method': method, 'mp': mp, 'step': step,
+                 'dggs_type': f'ISEA{aperture}{topology.upper()}'}
         grid_info = ISEAInfo.from_dict(arrts | options)
         return cls(cellids, name, grid_info)
 
-    # def concat(self, indexes: Sequence[Self], dim: Hashable, positions: Iterable[Iterable[int]] | None = None) -> Self:
-    #    idx = []
+    def concat(self, indexes: Sequence[Self], dim: Hashable, positions: Iterable[Iterable[int]] | None = None) -> Self:
+        idx = []
 
-    #    attrs = { 'resolution': indexes[0]._resolution ,
-    #              'aperture':  indexes[0]._aperture ,
-    #              'topology': indexes[0]._topology  ,
-    #              'epsg': indexes[0]._epsg,
-    #              'mp': indexes[0]._mp,
-    #              'trunk': indexes[0]._step
-    #            }
-    #    pd_indexes = [idx._pd_index.index for idx in indexes]
-    #    pd_indexes = pd_indexes[0].append(pd_indexes[1:])
+        attrs = { 'resolution': indexes[0]._resolution ,
+                 'aperture':  indexes[0]._aperture ,
+                 'topology': indexes[0]._topology  ,
+                 'epsg': indexes[0]._epsg,
+                 'mp': indexes[0]._mp,
+                 'trunk': indexes[0]._step
+                }
+        pd_indexes = [idx._pd_index.index for idx in indexes]
+        pd_indexes = pd_indexes[0].append(pd_indexes[1:])
 
-    #    return ISEAIndex.from_variables({dim:xr.Variable(dim,pd_indexes.values,attrs)},options={})
+        return ISEAIndex.from_variables({dim:xr.Variable(dim,pd_indexes.values,attrs)},options={})
 
     def create_variables(self, variables):
         var = list(variables.values())[0]
@@ -212,7 +204,7 @@ class ISEAIndex(DGGSIndex):
         lat = np.stack([lng, lat], axis=-1).reshape(-1, 2)
         del lng
         df = gpd.GeoDataFrame({'lng': lat[:, 0], 'lat': lat[:, 1]}, geometry=gpd.points_from_xy(lat[:, 0], lat[:, 1]))
-        cellids = self._dggrid_instance.cells_for_geo_points(df, True, self._dggs_type.upper(), self._resolution)
+        cellids = self._dggrid_instance.cells_for_geo_points(df, True, self._grid.dggs_type.upper(), self._grid.resolution)
         return cellids['seqnums'].to_numpy(dtype='int64')
 
     def _cellid2latlng(self, cell_ids: Any) -> tuple[np.ndarray, np.ndarray]:
@@ -229,19 +221,19 @@ class ISEAIndex(DGGSIndex):
                 for i in tqdm(p.range(batch)):
                     end = (i*step)+step if (((i*step)+step) < data.shape[0]) else data.shape[0]
                     trunk = data[(i*step):end]
-                    df = self._dggrid_instance.grid_centerpoint_from_cellids(trunk, self._dggs_type, self._resolution)
+                    df = self._dggrid_instance.grid_centerpoint_from_cellids(trunk, self._grid.dggs_type, self._grid.resolution)
                     ps = df['geometry'].values
                     ps = np.array([[p.y, p.x] for p in ps])
                     points[(i*step):end] = ps
         else:
-            df = self._dggrid_instance.grid_centerpoint_from_cellids(self._pd_index.index, self._dggs_type, self._resolution)
+            df = self._dggrid_instance.grid_centerpoint_from_cellids(self._pd_index.index, self._grid.dggs_type, self._grid.resolution)
             points = df['geometry'].values
             points = np.array([[p.y, p.x] for p in points])
 
         return points[:, 1], points[:, 0]
 
     def _repr_inline_(self, max_width: int):
-        return f"ISEAIndex(dgg_type={self._dggs_type}, resolution={self._resolution})"
+        return f"ISEAIndex(dgg_type={self._grid.dggs_type}, resolution={self._grid.resolution})"
 
     def sel(self, labels, method=None, tolerance=None):
         if method == "nearest":
@@ -266,11 +258,11 @@ class ISEAIndex(DGGSIndex):
                 for i in tqdm(p.range(batch)):
                     end = (i*step)+step if (((i*step)+step) < data.shape[0]) else data.shape[0]
                     trunk = data[(i*step):end]
-                    df = self._dggrid_instance.grid_cell_polygons_from_cellids(trunk, self._dggs_type, self._resolution)
+                    df = self._dggrid_instance.grid_cell_polygons_from_cellids(trunk, self._grid.dggs_type, self._grid.resolution)
                     geometryDF.append(df)
             geometryDF = gpd.GeoDataFrame(pd.concat( geometryDF, ignore_index=True))
         else:
-            geometryDF = self._dggrid_instance.grid_cell_polygons_from_cellids(data, self._dggs_type, self._resolution)
+            geometryDF = self._dggrid_instance.grid_cell_polygons_from_cellids(data, self._grid.dggs_type, self._grid.resolution)
         return geometryDF
 
     def polygon_for_extent(self, geoobj, src_epsg):
@@ -280,11 +272,11 @@ class ISEAIndex(DGGSIndex):
         except Exception as e:
             print(f'Invalid Extend : {e}')
         geoobj = transform(transformer, geoobj)
-        df = self._dggrid_instance.grid_cellids_for_extent(self._dggs_type, self._resolution, clip_geom=geoobj)
+        df = self._dggrid_instance.grid_cellids_for_extent(self._grid.dggs_type, self._grid.resolution, clip_geom=geoobj)
         return df
 
     def _replace(self, new_pd_index: PandasIndex):
-        return type(self)(new_pd_index, self._dim, self._resolution, self._dggs_type, self._aperture, self._topology, self._mp, self._step, self._epsg)
+        return type(self)(new_pd_index, self._dim, self._grid)
 
     def to_pandas_index(self):
         return self._pd_index.index
