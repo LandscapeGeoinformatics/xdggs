@@ -18,7 +18,7 @@ def decode(ds):
         # ISEA Grid Handling. The cell_ids index is created by stacking x,y coordinate.
         var_name = isea[0]
         data = ds[var_name]
-        if (type(data) is PandasIndex):
+        if (data.values.dtype == np.int64):
             # if it is already converted (in PandasIndexI)
             return ds.drop_indexes(var_name, errors="ignore").set_xindex(variable_name, DGGSIndex)
         if (ds[var_name].attrs.get('coordinate') is None):
@@ -30,7 +30,7 @@ def decode(ds):
         ds = ds.stack(cell_ids=[coords[0], coords[1]], create_index=False)
         tuple_ = [t for t in zip(ds[coords[0]].values, ds[coords[1]].values)]
         ds[variable_name] = xr.Variable([variable_name, 'coord'], tuple_, attrs)
-        return ds.set_xindex(variable_name, DGGSIndex).dggs_ds.drop_dims('coord')
+        return ds.set_xindex(variable_name, DGGSIndex).drop_dims('coord')
     else:
         return ds.drop_indexes(variable_name, errors="ignore").set_xindex(
             variable_name, DGGSIndex
