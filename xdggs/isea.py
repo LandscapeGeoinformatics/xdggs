@@ -1,5 +1,6 @@
 from collections.abc import Mapping
 
+import sys
 import numpy as np
 import xarray as xr
 from xarray.indexes import PandasIndex
@@ -27,7 +28,7 @@ import importlib
 import os
 import time
 import pandas as pd
-
+import tempfile
 from pyproj import Transformer
 
 
@@ -98,15 +99,10 @@ class ISEAIndex(DGGSIndex):
         *,
         options: Mapping[str, Any],
     ) -> "ISEAIndex":
-        name, var, _ = _extract_cell_id_variable(variables)
-        # Data Preprocessing
-        # If the variable's data is type of PandasIndex, should be already converted.
-        if (var.data.dtype == np.int64):
-            grid_info = ISEAInfo.from_dict(var.attrs)
-            return cls(var.data, var.dims[0], grid_info)
-        if (type(var.data[0]) is not tuple and (len(var.data[0]) != 2)):
-            raise Exception("ISEA set_xindex must consist of array of tuples in (x,y) order")
-        # For using set_xindex, assume the coordinate is in x, y ordering
+        # name, var, _ = _extract_cell_id_variable(variables)
+        isea = [k for k in variables.keys() if (variables[k].attrs.get('grid_name') == 'isea')]
+        var = variables[isea[0]]
+        # For using stack assume the coordinate is in x, y ordering
         # prepare to generate hexagon grid
         resolution = var.attrs.get("resolution", options.get("resolution", -1))
         coords = var.attrs.get('coordinate', options.get('coordinate'))
@@ -116,70 +112,97 @@ class ISEAIndex(DGGSIndex):
         method = var.attrs.get("method", options.get("method", "nearestpoint"))
         mp = var.attrs.get("mp", options.get('mp', 1))
         step = var.attrs.get("trunk", options.get('trunk', 250000)) if (mp > 1) else var.data.shape[0]
-
         grid = 'isea' + str(aperture) + topology
-        data = np.array(var.data)
+        x = variables[coords[0]].data
+        y = variables[coords[1]].data
         executable = os.environ['DGGRID_PATH']
-        working_dir = tempfile.mkdtemp()
-        dggs = DGGRIDv7(executable=executable, working_dir=working_dir, capture_logs=True, silent=True)
-        print(f'Data type : {data.dtype} , shape : {data.shape}')
+        reproject = Transformer.from_crs(src_epsg, 'wgs84', always_xy=True)
+        print(f'x shape: ({x.shape}), y shape: ({y.shape})')
         if (grid.upper() not in dggs_types):
             raise ValueError(f"{grid} is not defined in DGGRID")
         cellids = None
-        batch = int(np.ceil(data.shape[0] / step))
-        maxlat = np.max(data[:, 1])
-        minlat = np.min(data[:, 1])
-        maxlng = np.max(data[:, 0])
-        minlng = np.min(data[:, 0])
+        batch = int(np.ceil(x.shape[0] / step))
+        y_batch = int(np.ceil(y.shape[0] / step))
         # Auto Resolution
         if (resolution == -1):
-            resolution = cls._autoResolution(minlng, minlat, maxlng, maxlat, src_epsg, data.shape[0], dggs, grid)
+            maxlat, minlat, maxlng, minlng = np.max(y), np.min(y), np.max(x), np.min(x)
+            working_dir = tempfile.mkdtemp()
+            dggs = DGGRIDv7(executable=executable, working_dir=working_dir, capture_logs=True, silent=True)
+            resolution = cls._autoResolution(minlng, minlat, maxlng, maxlat, src_epsg, (x.shape[0] * y.shape[0]), dggs, grid)
         # Generate Cells ID
+        with tempfile.NamedTemporaryFile() as ntf:
+            cellids = np.memmap(ntf, mode='w+', shape=(x.shape[0] * y.shape[0]), dtype=np.int64)
         if (method.lower() == 'nearestpoint'):
-            df = gpd.GeoDataFrame([0], geometry=[box(minlng, minlat, maxlng, maxlat)], crs=src_epsg)
-            df = df.to_crs('wgs84')
-            data = [Point(p[0], p[1]) for p in data]
-            data = gpd.GeoDataFrame([0] * len(data), geometry=data, crs=src_epsg)
-            data = data.to_crs('wgs84')
-            data = np.array([[p.x, p.y] for p in data.geometry.values])
-            result = dggs.grid_centerpoint_for_extent(grid.upper(), resolution, clip_geom=df.geometry.values[0])
-            centroids = np.array([[c.x, c.y] for c in result.geometry.values])
-            centroids_idx = S2PointIndex(centroids)
-            distance, idx = centroids_idx.query(data[:, [0, 1]])
-            cellids = result.iloc[idx]['name'].astype('int64')
+            print("---Generate Cell ID with resolution -1 by nearestpoint method ---")
+            import pymp
+            start = time.time()
+            with pymp.Parallel(mp) as p:
+                for i in tqdm(p.range(batch)):
+                    end = (i * step) + step if (((i * step) + step) < x.shape[0]) else x.shape[0]
+                    offset = i * (y.shape[0] * step)
+                    y_offset = 0
+                    for j in range(y_batch):
+                        working_dir = tempfile.mkdtemp()
+                        dggs = DGGRIDv7(executable=executable, working_dir=working_dir, capture_logs=False, silent=True)
+                        y_end = (j * step) + step if (((j * step) + step) < y.shape[0]) else y.shape[0]
+                        x_trunk, y_trunk = np.broadcast_arrays(x[(i * step):end],  y[(j * step):y_end, None])
+                        x_trunk = np.stack([x_trunk, y_trunk], axis=-1)
+                        del y_trunk
+                        x_trunk = x_trunk.reshape(-1, 2)
+                        x_trunk[:, 0], x_trunk[:, 1] = reproject.transform(x_trunk[:, 0], x_trunk[:, 1])
+                        maxlat, minlat, maxlng, minlng = np.max(x_trunk[:, 1]), np.min(x_trunk[:, 1]), np.max(x_trunk[:, 0]), np.min(x_trunk[:, 0])
+                        truck_df = gpd.GeoDataFrame([0], geometry=[box(minlng, minlat, maxlng, maxlat)], crs='wgs84')
+                        result = dggs.grid_centerpoint_for_extent(grid.upper(), resolution, clip_geom=truck_df.geometry.values[0])
+                        centroids = result.geometry.get_coordinates()
+                        centroids = np.stack([centroids['x'].values, centroids['y'].values], axis=-1)
+                        centroids_idx = S2PointIndex(centroids)
+                        distance, idx = centroids_idx.query(x_trunk)
+                        cells = result.iloc[idx]['name'].astype('int64')
+                        cellids[offset + (j * y_offset): (offset + (j * y_offset)) + x_trunk.shape[0]] = cells
+                        y_offset = x_trunk.shape[0]
+                        cellids.flush()
+            print(f'cell generation time: ({time.time()-start})')
         elif (method.lower() == 'centerpoint'):
+            print("---Generate Cell ID with resolution -1 by nearestpoint method ---")
             if (importlib.util.find_spec('pymp') is None):
                 print("pymp not found, running on single core")
                 # Center Point Method
-                if (method.lower() == 'centerpoint'):
-                    print('centerpoint : adjust resolution + 1 ({resolution+1})')
-                    resolution = resolution + 1
-                    df = gpd.GeoDataFrame([0] * data.shape[0], geometry=gpd.points_from_xy(data[:, 0], data[:, 1]), crs=src_epsg)
-                    df = df.to_crs('wgs84')
-                    result = dggs.cells_for_geo_points(df, True, grid.upper(), resolution)
-                    cellids = result['seqnums'].values
-                    cellids = cellids.astype('int64')
+                working_dir = tempfile.mkdtemp()
+                dggs = DGGRIDv7(executable=executable, working_dir=working_dir, capture_logs=True, silent=True)
+                data, y_trunk = np.broadcast_arrays(x, y[:, None])
+                data = np.stack([data, y_trunk], axis=-1)
+                data[:, 0], data[:, 1] = reproject.transform(data[:, 0], data[:, 1])
+                del (y_trunk)
+                df = gpd.GeoDataFrame([0] * data.shape[0], geometry=gpd.points_from_xy(data[:, 0], data[:, 1]), crs=src_epsg)
+                result = dggs.cells_for_geo_points(df, True, grid.upper(), resolution)
+                cellids = result['seqnums'].values
+                cellids = cellids.astype('int64')
             else:
                 import pymp
-                if (method.lower() == 'centerpoint'):
-                    cellids = pymp.shared.array((data.shape[0]), dtype='int64')
-                    print(f"Batch Size: {batch}")
-                    print(f'centerpoint : adjust resolution + 1 ({resolution+1})')
-                    resolution = resolution + 1
-                    with pymp.Parallel(mp) as p:
-                        for i in tqdm(p.range(batch)):
-                            end = (i * step) + step if (((i * step) + step) < data.shape[0]) else data.shape[0]
-                            trunk = data[(i * step):end]
-                            df = gpd.GeoDataFrame([0] * trunk.shape[0], geometry=gpd.points_from_xy(trunk[:, 0], trunk[:, 1]), crs=src_epsg)
-                            df = df.to_crs('wgs84')
+                with pymp.Parallel(mp) as p:
+                    for i in tqdm(p.range(batch)):
+                        end = (i * step) + step if (((i * step) + step) < x.shape[0]) else x.shape[0]
+                        offset = i * (y.shape[0] * step)
+                        y_offset = 0
+                        for j in range(y_batch):
+                            working_dir = tempfile.mkdtemp()
+                            dggs = DGGRIDv7(executable=executable, working_dir=working_dir, capture_logs=True, silent=True)
+                            y_end = (j * step) + step if (((j * step) + step) < y.shape[0]) else y.shape[0]
+                            x_trunk, y_trunk = np.broadcast_arrays(x[(i * step):end], y[(j * step):y_end, None])
+                            x_trunk = np.stack([x_trunk, y_trunk], axis=-1)
+                            del y_trunk
+                            x_trunk = x_trunk.reshape(-1, 2)
+                            x_trunk[:, 0], x_trunk[:, 1] = reproject.transform(x_trunk[:, 0], x_trunk[:, 1])
+                            df = gpd.GeoDataFrame([0] * x_trunk.shape[0], geometry=gpd.points_from_xy(x_trunk[:, 0], x_trunk[:, 1]), crs=src_epsg)
                             result = dggs.cells_for_geo_points(df, True, grid.upper(), resolution)
-                            cellids[(i * step):(i * step) + result['seqnums'].values.shape[0]] = result['seqnums'].values.astype('int64')
+                            cellids[offset + (j * y_offset): (offset + (j * y_offset)) + x_trunk.shape[0]] = result['seqnums'].values.astype('int64')
+                            y_offset = x_trunk.shape[0]
         print(f'Cell ID calcultion completed, unique cell id :{np.unique(cellids).shape[0]}')
         arrts = {'resolution': resolution, 'aperture': aperture, 'topology': topology,
                  'src_epsg': src_epsg, 'coordinate': coords, 'method': method, 'mp': mp, 'step': step,
                  'dggs_type': f'ISEA{aperture}{topology.upper()}'}
         grid_info = ISEAInfo.from_dict(arrts | options)
-        return cls(cellids, name, grid_info)
+        return cls(cellids, 'cell_ids', grid_info)
 
     def concat(self, indexes: Sequence[Self], dim: Hashable, positions: Iterable[Iterable[int]] | None = None) -> Self:
         attrs = indexes[0]._grid.to_dict()
@@ -295,8 +318,8 @@ class ISEAIndex(DGGSIndex):
         lon1, lon2, lat1, lat2 = deg2rad(lon1), deg2rad(lon2), deg2rad(lat1), deg2rad(lat2)
         a = (sin((lon2 - lon1) / 2) ** 2 + cos(lon1) * cos(lon2) * sin(0) ** 2)
         d = 2 * arcsin(sqrt(a))
-        normalize = 4 * pi if (src_epsg.lower() == 'epsg:3301') else 1
-        area = abs(d * ((power(R, 2) * sin(lat2)) - (power(R, 2) * sin(lat1)))) / normalize
+        # normalize = 4 * pi if (src_epsg.lower() == 'epsg:3301') else 1
+        area = abs(d * ((power(R, 2) * sin(lat2)) - (power(R, 2) * sin(lat1))))
         print(f'Total Bounds Area (km^2): {area}')
         avg_area_per_data = (area / num_data)
         print(f'Area per center point (km^2): {avg_area_per_data}')

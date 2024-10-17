@@ -23,14 +23,10 @@ def decode(ds):
             return ds.drop_indexes(var_name, errors="ignore").set_xindex(variable_name, DGGSIndex)
         if (ds[var_name].attrs.get('coordinate') is None):
             raise ValueError("ISEA DGGSInfo must consist of coordinate attribute")
-        coords = ds[var_name].attrs['coordinate']
-        attrs = ds[var_name].attrs
+        coords = data.attrs['coordinate']
         if (len(coords) != 2):
             raise ValueError("ISEA DGGSInfo must consist of coordinate of size 2 in [x, y] order")
-        ds = ds.stack(cell_ids=[coords[0], coords[1]], create_index=False)
-        tuple_ = [t for t in zip(ds[coords[0]].values, ds[coords[1]].values)]
-        ds[variable_name] = xr.Variable([variable_name, 'coord'], tuple_, attrs)
-        return ds.set_xindex(variable_name, DGGSIndex).drop_dims('coord')
+        return ds.stack(cell_ids=[coords[0], coords[1]], index_cls=DGGSIndex)
     else:
         return ds.drop_indexes(variable_name, errors="ignore").set_xindex(
             variable_name, DGGSIndex

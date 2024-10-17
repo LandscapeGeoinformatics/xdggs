@@ -11,6 +11,11 @@ dependencies:
   - pooch
   - matplotlib-base
   - shapely
+  - tqdm
+  - pys2index
+  - gdal==3.6.2
+  - proj==9.1.0
   - pip
   - pip:
       - h3ronpy
+      - pymp-pypi
