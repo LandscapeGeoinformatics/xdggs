@@ -143,7 +143,7 @@ class ISEAIndex(DGGSIndex):
                     y_offset = 0
                     for j in range(y_batch):
                         working_dir = tempfile.mkdtemp()
-                        dggs = DGGRIDv7(executable=executable, working_dir=working_dir, capture_logs=False, silent=True)
+                        dggs = DGGRIDv7(executable=executable, working_dir=working_dir, capture_logs=True, silent=True, tmp_geo_out_legacy=False)
                         y_end = (j * step) + step if (((j * step) + step) < y.shape[0]) else y.shape[0]
                         x_trunk, y_trunk = np.broadcast_arrays(x[(i * step):end],  y[(j * step):y_end, None])
                         x_trunk = np.stack([x_trunk, y_trunk], axis=-1)
@@ -163,7 +163,7 @@ class ISEAIndex(DGGSIndex):
                         cellids.flush()
             print(f'cell generation time: ({time.time()-start})')
         elif (method.lower() == 'centerpoint'):
-            print("---Generate Cell ID with resolution -1 by nearestpoint method ---")
+            print("---Generate Cell ID with resolution -1 by centerpoint method ---")
             if (importlib.util.find_spec('pymp') is None):
                 print("pymp not found, running on single core")
                 # Center Point Method
