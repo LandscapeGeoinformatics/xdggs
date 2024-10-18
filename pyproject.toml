@@ -37,12 +37,9 @@ dependencies = [
     "xarray",
     "healpy",
     "h3ronpy",
-<<<<<<< HEAD
 	"dggrid4py",
-	"tqdm"
-=======
-    "typing-extensions",
->>>>>>> upstream/main
+	"tqdm",
+    "typing-extensions"
 ]
 
 [project.urls]
