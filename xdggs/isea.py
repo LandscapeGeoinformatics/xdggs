@@ -102,6 +102,9 @@ class ISEAIndex(DGGSIndex):
         # name, var, _ = _extract_cell_id_variable(variables)
         isea = [k for k in variables.keys() if (variables[k].attrs.get('grid_name') == 'isea')]
         var = variables[isea[0]]
+        if (type(var.data) is np.ndarray):
+            if (var.data.dtype == np.int64):
+                return cls(var.data, 'cell_ids', ISEAInfo.from_dict(var.attrs))
         # For using stack assume the coordinate is in x, y ordering
         # prepare to generate hexagon grid
         resolution = var.attrs.get("resolution", options.get("resolution", -1))
