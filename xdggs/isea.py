@@ -171,7 +171,6 @@ class ISEAIndex(DGGSIndex):
                             # handling for x and y axis boundary case (top right corner)
                             yoff = (x[(i * step):end].shape[0] * step) if ((i == (batch - 1)) and (j == (y_batch - 1))) else yoff
                             cellids[offset + (j * yoff):((offset + (j * yoff)) + x_trunk.shape[0])] = cells
-                            y_offset = x_trunk.shape[0]
                             cellids.flush()
             print(f'cell generation time: ({time.time()-start})')
         elif (method.lower() == 'centerpoint'):
