@@ -124,8 +124,13 @@ class ISEAIndex(DGGSIndex):
         if (grid.upper() not in dggs_types):
             raise ValueError(f"{grid} is not defined in DGGRID")
         cellids = None
-        batch = int(np.ceil(x.shape[0] / step))
+        x_batch = int(np.ceil(x.shape[0] / step))
         y_batch = int(np.ceil(y.shape[0] / step))
+        job = np.arange(x_batch)
+        job1 = np.arange(y_batch)
+        job, job1 = np.broadcast_arrays(job, job1[:, None])
+        job = np.stack([job, job1], axis=-1).reshape(-1, 2)
+        del (job1)
         y_offset = step * step
         x_mp = int(np.ceil(mp / 2))
         y_mp = (mp - x_mp) if (mp - x_mp > 0) else 1
@@ -139,80 +144,62 @@ class ISEAIndex(DGGSIndex):
         with tempfile.NamedTemporaryFile() as ntf:
             cellids = np.memmap(ntf, mode='w+', shape=(x.shape[0] * y.shape[0]), dtype=np.int64)
         if (method.lower() == 'nearestpoint'):
-            print(f"---Generate Cell ID with resolution -1 by nearestpoint method, x batch:{batch}, y batch:{y_batch}---")
+            print(f"---Generate Cell ID with resolution -1 by nearestpoint method, x batch:{x_batch}, y batch:{y_batch}---")
             import pymp
             start = time.time()
-            pymp.config.nested = True
-            print(f"--- Multiprocessing x:{x_mp}, y:{y_mp} ---")
-            with pymp.Parallel(x_mp) as p:
-                for i in tqdm(p.range(batch)):
+            print(f"--- Multiprocessing {mp} ---")
+            with pymp.Parallel(mp) as p:
+                for b in tqdm(p.range(len(job))):
+                    i, j = job[b][0], job[b][1]
                     end = (i * step) + step if (((i * step) + step) < x.shape[0]) else x.shape[0]
+                    y_end = (j * step) + step if (((j * step) + step) < y.shape[0]) else y.shape[0]
                     offset = i * (y.shape[0] * step)
-                    with pymp.Parallel(y_mp) as q:
-                        for j in q.range(y_batch):
-                            working_dir = tempfile.mkdtemp()
-                            dggs = DGGRIDv7(executable=executable, working_dir=working_dir, capture_logs=True, silent=True, tmp_geo_out_legacy=False)
-                            y_end = (j * step) + step if (((j * step) + step) < y.shape[0]) else y.shape[0]
-                            x_trunk, y_trunk = np.broadcast_arrays(x[(i * step):end],  y[(j * step):y_end, None])
-                            x_trunk = np.stack([x_trunk, y_trunk], axis=-1)
-                            del y_trunk
-                            x_trunk = x_trunk.reshape(-1, 2)
-                            x_trunk[:, 0], x_trunk[:, 1] = reproject.transform(x_trunk[:, 0], x_trunk[:, 1])
-                            maxlat, minlat, maxlng, minlng = np.max(x_trunk[:, 1]), np.min(x_trunk[:, 1]), np.max(x_trunk[:, 0]), np.min(x_trunk[:, 0])
-                            truck_df = gpd.GeoDataFrame([0], geometry=[box(minlng, minlat, maxlng, maxlat)], crs='wgs84')
-                            result = dggs.grid_centerpoint_for_extent(grid.upper(), resolution, clip_geom=truck_df.geometry.values[0])
-                            centroids = result.geometry.get_coordinates()
-                            centroids = np.stack([centroids['x'].values, centroids['y'].values], axis=-1)
-                            centroids_idx = S2PointIndex(centroids)
-                            distance, idx = centroids_idx.query(x_trunk)
-                            cells = result.iloc[idx]['name'].astype('int64')
-                            # handling for x-axis boundary case
-                            yoff = y_offset if (i != (batch - 1)) else x_trunk.shape[0]
-                            # handling for x and y axis boundary case (top right corner)
-                            yoff = (x[(i * step):end].shape[0] * step) if ((i == (batch - 1)) and (j == (y_batch - 1))) else yoff
-                            cellids[offset + (j * yoff):((offset + (j * yoff)) + x_trunk.shape[0])] = cells
-                            cellids.flush()
+                    x_trunk, y_trunk = np.broadcast_arrays(x[(i * step):end],  y[(j * step):y_end, None])
+                    x_trunk = np.stack([x_trunk, y_trunk], axis=-1).reshape(-1, 2)
+                    x_trunk[:, 0], x_trunk[:, 1] = reproject.transform(x_trunk[:, 0], x_trunk[:, 1])
+                    maxlat, minlat, maxlng, minlng = np.max(x_trunk[:, 1]), np.min(x_trunk[:, 1]), np.max(x_trunk[:, 0]), np.min(x_trunk[:, 0])
+                    truck_df = gpd.GeoDataFrame([0], geometry=[box(minlng, minlat, maxlng, maxlat)], crs='wgs84')
+                    del y_trunk
+                    working_dir = tempfile.mkdtemp()
+                    dggs = DGGRIDv7(executable=executable, working_dir=working_dir, capture_logs=True, silent=True, tmp_geo_out_legacy=False)
+                    result = dggs.grid_centerpoint_for_extent(grid.upper(), resolution, clip_geom=truck_df.geometry.values[0])
+                    centroids = result.geometry.get_coordinates()
+                    centroids = np.stack([centroids['x'].values, centroids['y'].values], axis=-1)
+                    centroids_idx = S2PointIndex(centroids)
+                    distance, idx = centroids_idx.query(x_trunk)
+                    cells = result.iloc[idx]['name'].astype('int64')
+                    # handling for x-axis boundary case
+                    yoff = y_offset if (i != (x_batch - 1)) else x_trunk.shape[0]
+                    # handling for x and y axis boundary case (top right corner)
+                    yoff = (x[(i * step):end].shape[0] * step) if ((i == (x_batch - 1)) and (j == (y_batch - 1))) else yoff
+                    cellids[offset + (j * yoff):((offset + (j * yoff)) + x_trunk.shape[0])] = cells
+                    cellids.flush()
             print(f'cell generation time: ({time.time()-start})')
         elif (method.lower() == 'centerpoint'):
-            print(f"---Generate Cell ID with resolution -1 by centerpoint method x batch:{batch}, y batch:{y_batch}---")
-            if (importlib.util.find_spec('pymp') is None):
-                print("pymp not found, running on single core")
-                # Center Point Method
-                working_dir = tempfile.mkdtemp()
-                dggs = DGGRIDv7(executable=executable, working_dir=working_dir, capture_logs=True, silent=True)
-                data, y_trunk = np.broadcast_arrays(x, y[:, None])
-                data = np.stack([data, y_trunk], axis=-1)
-                data[:, 0], data[:, 1] = reproject.transform(data[:, 0], data[:, 1])
-                del (y_trunk)
-                df = gpd.GeoDataFrame([0] * data.shape[0], geometry=gpd.points_from_xy(data[:, 0], data[:, 1]), crs=src_epsg)
-                result = dggs.cells_for_geo_points(df, True, grid.upper(), resolution)
-                cellids = result['seqnums'].values
-                cellids = cellids.astype('int64')
-            else:
-                import pymp
-                pymp.config.nested = True
-                print(f"--- Multiprocessing x:{x_mp}, y:{y_mp} ---")
-                with pymp.Parallel(x_mp) as p:
-                    for i in tqdm(p.range(batch)):
-                        end = (i * step) + step if (((i * step) + step) < x.shape[0]) else x.shape[0]
-                        offset = i * (y.shape[0] * step)
-                        with pymp.Parallel(y_mp) as q:
-                            for j in q.range(y_batch):
-                                working_dir = tempfile.mkdtemp()
-                                dggs = DGGRIDv7(executable=executable, working_dir=working_dir, capture_logs=True, silent=True)
-                                y_end = (j * step) + step if (((j * step) + step) < y.shape[0]) else y.shape[0]
-                                x_trunk, y_trunk = np.broadcast_arrays(x[(i * step):end], y[(j * step):y_end, None])
-                                x_trunk = np.stack([x_trunk, y_trunk], axis=-1)
-                                del y_trunk
-                                x_trunk = x_trunk.reshape(-1, 2)
-                                x_trunk[:, 0], x_trunk[:, 1] = reproject.transform(x_trunk[:, 0], x_trunk[:, 1])
-                                df = gpd.GeoDataFrame([0] * x_trunk.shape[0], geometry=gpd.points_from_xy(x_trunk[:, 0], x_trunk[:, 1]), crs=src_epsg)
-                                result = dggs.cells_for_geo_points(df, True, grid.upper(), resolution)
-                                # handling for x-axis boundary case
-                                yoff = y_offset if (i != (batch - 1)) else x_trunk.shape[0]
-                                # handling for x and y axis boundary case (top right corner)
-                                yoff = (x[(i * step):end].shape[0] * step) if ((i == (batch - 1)) and (j == (y_batch - 1))) else yoff
-                                cellids[offset + (j * yoff): (offset + (j * yoff)) + x_trunk.shape[0]] = result['seqnums'].values.astype('int64')
+            print(f"---Generate Cell ID with resolution -1 by centerpoint method x batch:{x_batch}, y batch:{y_batch}---")
+            import pymp
+            pymp.config.nested = True
+            print(f"--- Multiprocessing {mp} ---")
+            with pymp.Parallel(x_mp) as p:
+                for b in tqdm(p.range(len(job))):
+                    i, j = job[b][0], job[b][1]
+                    end = (i * step) + step if (((i * step) + step) < x.shape[0]) else x.shape[0]
+                    offset = i * (y.shape[0] * step)
+                    working_dir = tempfile.mkdtemp()
+                    dggs = DGGRIDv7(executable=executable, working_dir=working_dir, capture_logs=True, silent=True)
+                    y_end = (j * step) + step if (((j * step) + step) < y.shape[0]) else y.shape[0]
+                    x_trunk, y_trunk = np.broadcast_arrays(x[(i * step):end], y[(j * step):y_end, None])
+                    x_trunk = np.stack([x_trunk, y_trunk], axis=-1)
+                    del y_trunk
+                    x_trunk = x_trunk.reshape(-1, 2)
+                    x_trunk[:, 0], x_trunk[:, 1] = reproject.transform(x_trunk[:, 0], x_trunk[:, 1])
+                    df = gpd.GeoDataFrame([0] * x_trunk.shape[0], geometry=gpd.points_from_xy(x_trunk[:, 0], x_trunk[:, 1]), crs=src_epsg)
+                    result = dggs.cells_for_geo_points(df, True, grid.upper(), resolution)
+                    # handling for x-axis boundary case
+                    yoff = y_offset if (i != (x_batch - 1)) else x_trunk.shape[0]
+                    # handling for x and y axis boundary case (top right corner)
+                    yoff = (x[(i * step):end].shape[0] * step) if ((i == (x_batch - 1)) and (j == (y_batch - 1))) else yoff
+                    cellids[offset + (j * yoff): (offset + (j * yoff)) + x_trunk.shape[0]] = result['seqnums'].values.astype('int64')
         print(f'Cell ID calcultion completed, unique cell id :{np.unique(cellids).shape[0]}')
         arrts = {'resolution': resolution, 'aperture': aperture, 'topology': topology,
                  'src_epsg': src_epsg, 'coordinate': coords, 'method': method, 'mp': mp, 'step': step,
