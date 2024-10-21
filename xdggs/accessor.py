@@ -3,6 +3,7 @@ import xarray as xr
 
 from xdggs.grid import DGGSInfo
 from xdggs.index import DGGSIndex
+from xdggs.plotting import explore
 
 
 @xr.register_dataset_accessor("dggs")
@@ -106,15 +107,16 @@ class DGGSAccessor:
             geometryDF = self.index._geometry(result.cell_ids.data)
         geometryDF = geometryDF.sort_values('name')
         self._obj = result.sortby('cell_ids')
-        self._obj['hex_geometry']=((self._index._dim), geometryDF['geometry'].to_wkt())
+        self._obj['hex_geometry'] = ((self._index._dim), geometryDF['geometry'].to_wkt())
         return self._obj
-
-        #return self._obj.assign_coords(polygon=('polygon',geometryDF)).drop_indexes('polygon')
-
 
     def polygon_for_extent(self, extent, src_crs):
         geometryDF = self.index.polygon_for_extent(extent, src_crs)
         return self._obj.sel({'cell_ids': geometryDF[0].values})
+
+    @property
+    def cell_ids(self):
+        return self._obj[self._name]
 
     def cell_centers(self):
         lon_data, lat_data = self.index.cell_centers()
@@ -124,4 +126,46 @@ class DGGSAccessor:
                 "latitude": (self.index._dim, lat_data),
                 "longitude": (self.index._dim, lon_data),
             }
+        )
+
+    def cell_boundaries(self):
+        boundaries = self.index.cell_boundaries()
+
+        return xr.DataArray(
+            boundaries, coords={self._name: self.cell_ids}, dims=self.cell_ids.dims
+        )
+
+    def explore(self, *, cmap="viridis", center=None, alpha=None):
+        """interactively explore the data using `lonboard`
+
+        Requires `lonboard`, `matplotlib`, and `arro3.core` to be installed.
+
+        Parameters
+        ----------
+        cmap : str
+            The name of the color map to use
+        center : int or float, optional
+            If set, will use this as the center value of a diverging color map.
+        alpha : float, optional
+            If set, controls the transparency of the polygons.
+
+        Returns
+        -------
+        map : lonboard.Map
+            The rendered map.
+
+        Notes
+        -----
+        Plotting currently is restricted to 1D `DataArray` objects.
+        """
+        if isinstance(self._obj, xr.Dataset):
+            raise ValueError("does not work with Dataset objects, yet")
+
+        cell_dim = self._obj[self._name].dims[0]
+        return explore(
+            self._obj,
+            cell_dim=cell_dim,
+            cmap=cmap,
+            center=center,
+            alpha=alpha,
         )

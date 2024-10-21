@@ -1,3 +1,4 @@
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, ClassVar
@@ -9,12 +10,52 @@ except ImportError:  # pragma: no cover
 
 import numpy as np
 import xarray as xr
-from h3ronpy.arrow.vector import cells_to_coordinates, coordinates_to_cells
+from h3ronpy.arrow.vector import (
+    cells_to_coordinates,
+    cells_to_wkb_polygons,
+    coordinates_to_cells,
+)
 from xarray.indexes import PandasIndex
 
 from xdggs.grid import DGGSInfo
 from xdggs.index import DGGSIndex
 from xdggs.utils import _extract_cell_id_variable, register_dggs
+
+
+def polygons_shapely(wkb):
+    import shapely
+
+    return shapely.from_wkb(wkb)
+
+
+def polygons_geoarrow(wkb):
+    import pyproj
+    import shapely
+    from arro3.core import list_array
+
+    polygons = shapely.from_wkb(wkb)
+    crs = pyproj.CRS.from_epsg(4326)
+
+    geometry_type, coords, (ring_offsets, geom_offsets) = shapely.to_ragged_array(
+        polygons
+    )
+
+    if geometry_type != shapely.GeometryType.POLYGON:
+        raise ValueError(f"unsupported geometry type found: {geometry_type}")
+
+    polygon_array = list_array(
+        geom_offsets.astype("int32"), list_array(ring_offsets.astype("int32"), coords)
+    )
+    polygon_array_with_geo_meta = polygon_array.cast(
+        polygon_array.field.with_metadata(
+            {
+                "ARROW:extension:name": "geoarrow.polygon",
+                "ARROW:extension:metadata": json.dumps({"crs": crs.to_json_dict()}),
+            }
+        )
+    )
+
+    return polygon_array_with_geo_meta
 
 
 @dataclass(frozen=True)
@@ -44,6 +85,19 @@ class H3Info(DGGSInfo):
 
     def geographic2cell_ids(self, lon, lat):
         return coordinates_to_cells(lat, lon, self.resolution, radians=False)
+
+    def cell_boundaries(self, cell_ids, backend="shapely"):
+        # TODO: convert cell ids directly to geoarrow once h3ronpy supports it
+        wkb = cells_to_wkb_polygons(cell_ids, radians=False, link_cells=False)
+
+        backends = {
+            "shapely": polygons_shapely,
+            "geoarrow": polygons_geoarrow,
+        }
+        backend_func = backends.get(backend)
+        if backend_func is None:
+            raise ValueError("invalid backend: {backend!r}")
+        return backend_func(wkb)
 
 
 @register_dggs("h3")

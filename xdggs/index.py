@@ -69,7 +69,6 @@ class DGGSIndex(Index):
     def concat(self, indexes: Sequence[Self], dim: Hashable, positions: Iterable[Iterable[int]] | None = None, ) -> Self:
         return self.concat(cls, indexes, dim, positions)
 
-
     def create_variables(
         self, variables: Mapping[Any, xr.Variable] | None = None
     ) -> dict[Hashable, xr.Variable]:
@@ -97,6 +96,9 @@ class DGGSIndex(Index):
 
     def _geometry(self, extent=None):
         raise NotImplementedError()
+
+    def cell_boundaries(self) -> np.ndarray:
+        return self.grid_info.cell_boundaries(self._pd_index.index.values)
 
     @property
     def grid_info(self) -> DGGSInfo:
