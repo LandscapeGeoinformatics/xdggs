@@ -186,7 +186,7 @@ class ISEAIndex(DGGSIndex):
                     end = (i * step) + step if (((i * step) + step) < x.shape[0]) else x.shape[0]
                     offset = i * (y.shape[0] * step)
                     working_dir = tempfile.mkdtemp()
-                    dggs = DGGRIDv7(executable=executable, working_dir=working_dir, capture_logs=True, silent=True)
+                    dggs = DGGRIDv7(executable=executable, working_dir=working_dir, capture_logs=True, silent=True, tmp_geo_out_legacy=False))
                     y_end = (j * step) + step if (((j * step) + step) < y.shape[0]) else y.shape[0]
                     x_trunk, y_trunk = np.broadcast_arrays(x[(i * step):end], y[(j * step):y_end, None])
                     x_trunk = np.stack([x_trunk, y_trunk], axis=-1)
