@@ -37,7 +37,7 @@ dependencies = [
     "xarray",
     "healpy",
     "h3ronpy",
-	"dggrid4py",
+	"dggrid4py==0.2.8",
 	"tqdm",
     "typing-extensions"
   "lonboard>=0.9.3",
